@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mariposa y flor</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #video { display: none; }
+  #estado {
+    position: fixed; left: 16px; bottom: 16px; color: #cdb8ff; font-size: 14px;
+    background: rgba(20, 10, 40, .55); padding: 8px 12px; border-radius: 10px;
+  }
+</style>
+</head>
+<body>
+<video id="video" playsinline></video>
+<canvas id="lienzo"></canvas>
+<div id="estado">Cargando cámara…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+// ---------- Configuración ----------
+const IMG_MARIPOSA = 'mariposa.png';   // pon aquí tu imagen de la mariposa
+const IMG_FLOR     = 'flor.png';       // pon aquí tu imagen de la flor
+const TAMANO       = 0.38;             // tamaño relativo al alto de la pantalla
+const SUAVIZADO    = 0.18;             // 0 a 1, más alto = sigue la mano más rápido
+const UMBRAL_PUNO  = 1.25;             // más bajo = cuesta más considerar el puño cerrado
+
+// ---------- Elementos ----------
+const video  = document.getElementById('video');
+const lienzo = document.getElementById('lienzo');
+const ctx    = lienzo.getContext('2d');
+const estado = document.getElementById('estado');
+
+function ajustar() {
+  lienzo.width = innerWidth * devicePixelRatio;
+  lienzo.height = innerHeight * devicePixelRatio;
+}
+addEventListener('resize', ajustar);
+ajustar();
+
+const mariposa = new Image(); mariposa.src = IMG_MARIPOSA;
+const flor     = new Image(); flor.src = IMG_FLOR;
+
+// ---------- Estado de la animación ----------
+let objetivo = { x: 0.5, y: 0.5 };
+let pos      = { x: 0.5, y: 0.5 };
+let mezcla   = 0;          // 0 = mariposa, 1 = flor
+let puno     = false;
+let manoVisible = false;
+let t = 0;
+const chispas = [];
+
+// ---------- Detección de mano ----------
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+function manoCerrada(l) {
+  // Compara la distancia de cada punta de dedo a la muñeca con el tamaño de la palma.
+  const palma = dist(l[0], l[9]);
+  const puntas = [8, 12, 16, 20];
+  const media = puntas.reduce((s, i) => s + dist(l[i], l[0]), 0) / puntas.length;
+  return media / palma < UMBRAL_PUNO;
+}
+
+function alResultado(r) {
+  if (r.multiHandLandmarks && r.multiHandLandmarks.length) {
+    const l = r.multiHandLandmarks[0];
+    manoVisible = true;
+    // centro de la palma, con el eje X invertido para que actúe como espejo
+    objetivo.x = 1 - (l[0].x + l[9].x) / 2;
+    objetivo.y = (l[0].y + l[9].y) / 2;
+    puno = manoCerrada(l);
+    estado.textContent = puno ? 'Mano cerrada: flor' : 'Mano abierta: mariposa';
+  } else {
+    manoVisible = false;
+    estado.textContent = 'Muestra tu mano a la cámara';
+  }
+}
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6
+});
+hands.onResults(alResultado);
+
+const camara = new Camera(video, {
+  onFrame: async () => { await hands.send({ image: video }); },
+  width: 640,
+  height: 480
+});
+camara.start().catch(() => { estado.textContent = 'No pude acceder a la cámara. Revisa los permisos.'; });
+
+// ---------- Dibujo ----------
+function dibujarImagen(img, x, y, ancho, alfa, giro) {
+  if (!img.complete || !img.naturalWidth || alfa <= 0.003) return;
+  const alto = ancho * (img.naturalHeight / img.naturalWidth);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, alfa);
+  ctx.translate(x, y);
+  ctx.rotate(giro);
+  ctx.drawImage(img, -ancho / 2, -alto / 2, ancho, alto);
+  ctx.restore();
+}
+
+function lanzarChispas(x, y, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = 0.5 + Math.random() * 3;
+    chispas.push({
+      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 0.4,
+      vida: 1, tam: 1 + Math.random() * 2.5,
+      color: Math.random() < 0.5 ? '200,170,255' : '255,200,140'
+    });
+  }
+}
+
+let ultimoPuno = false;
+
+function bucle() {
+  t += 0.016;
+
+  // movimiento suave hacia la mano
+  pos.x += (objetivo.x - pos.x) * SUAVIZADO;
+  pos.y += (objetivo.y - pos.y) * SUAVIZADO;
+
+  // transición mariposa <-> flor
+  const meta = (manoVisible && puno) ? 1 : 0;
+  mezcla += (meta - mezcla) * 0.09;
+
+  const W = lienzo.width, H = lienzo.height;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const px = pos.x * W;
+  const py = pos.y * H + Math.sin(t * 2) * 6 * devicePixelRatio; // flotación suave
+  const base = H * TAMANO;
+
+  // 'lighter' hace que el fondo negro de las imágenes desaparezca y brillen
+  ctx.globalCompositeOperation = 'lighter';
+
+  // mariposa: se encoge y gira un poco al desaparecer
+  const escM = 1 - mezcla * 0.35;
+  dibujarImagen(mariposa, px, py, base * escM, 1 - mezcla, Math.sin(t * 3) * 0.05 + mezcla * 0.6);
+
+  // flor: crece al aparecer
+  const escF = 0.55 + mezcla * 0.45;
+  dibujarImagen(flor, px, py, base * escF, mezcla, (1 - mezcla) * -0.6);
+
+  // chispas al cambiar de forma
+  if (puno !== ultimoPuno && manoVisible) {
+    lanzarChispas(px, py, 90);
+    ultimoPuno = puno;
+  }
+  for (let i = chispas.length - 1; i >= 0; i--) {
+    const c = chispas[i];
+    c.x += c.vx * devicePixelRatio; c.y += c.vy * devicePixelRatio;
+    c.vy += 0.02; c.vida -= 0.014;
+    if (c.vida <= 0) { chispas.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(${c.color},${c.vida})`;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, c.tam * devicePixelRatio, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  requestAnimationFrame(bucle);
+}
+bucle();
+</script>
+</body>
+</html>
